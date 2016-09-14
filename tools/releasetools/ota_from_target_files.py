@@ -628,6 +628,27 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
   if "selinux_fc" in OPTIONS.info_dict:
     WritePolicyConfig(OPTIONS.info_dict["selinux_fc"], output_zip)
 
+  model = GetBuildProp("ro.product.model", OPTIONS.info_dict)
+  build = GetBuildProp("ro.build.date", OPTIONS.info_dict)
+  script.Print(" Compiled: %s "%(build));
+  script.Print(" For: %s   "%(model));
+  script.Print("                                        ");
+  script.Print("                                        ");
+  script.Print(" Compiled: %s "%(build));
+  script.Print(" For: %s   "%(model));
+  script.Print(" _______  _______  _______  _______     ");
+  script.Print("(  ___  )(  ___  )(  ____ \(  ____ )    ");
+  script.Print("| (   ) || (   ) || (    \/| (    )|    ");
+  script.Print("| (___) || |   | || (_____ | (____)|    ");
+  script.Print("|  ___  || |   | |(_____  )|  _____)    ");
+  script.Print("| (   ) || |   | |      ) || (          ");
+  script.Print("| )   ( || (___) |/\____) || )          ");
+  script.Print("|/     \|(_______)\_______)|/           ");
+  script.Print("                                        ");
+  script.Print("                                        ");
+  script.Print("----------------------------------------");
+  script.Print("            By Vasishath and Shahan_mik3 ");
+  
   recovery_mount_options = OPTIONS.info_dict.get("recovery_mount_options")
 
   system_items = ItemSet("system", "META/filesystem_config.txt")
