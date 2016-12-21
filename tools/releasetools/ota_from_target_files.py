@@ -124,6 +124,17 @@ Usage:  ota_from_target_files [flags] input_target_files output_ota_package
 
   --payload_signer_args <args>
       Specify the arguments needed for payload signer.
+  
+  --backup <boolean>
+      Enable or disable the execution of backuptool.sh.
+      Disabled by default.
+
+  --override_device <device>
+      Override device-specific asserts. Can be a comma-separated list.
+
+  --override_prop <boolean>
+      Override build.prop items with custom vendor init.
+      Enabled when TARGET_UNIFIED_DEVICE is defined in BoardConfig
 """
 
 import sys
@@ -164,11 +175,15 @@ OPTIONS.block_based = False
 OPTIONS.updater_binary = None
 OPTIONS.oem_source = None
 OPTIONS.oem_no_mount = False
+OPTIONS.backuptool = False
 OPTIONS.fallback_to_full = True
+OPTIONS.override_device = 'auto'
+OPTIONS.override_prop = False
 OPTIONS.full_radio = False
 OPTIONS.full_bootloader = False
 # Stash size cannot exceed cache_size * threshold.
 OPTIONS.cache_size = None
+OPTIONS.backuptool = False
 OPTIONS.stash_threshold = 0.8
 OPTIONS.gen_verify = False
 OPTIONS.log_diff = None
@@ -454,7 +469,13 @@ def SignOutput(temp_zip_name, output_zip_name):
 def AppendAssertions(script, info_dict, oem_dict=None):
   oem_props = info_dict.get("oem_fingerprint_properties")
   if oem_props is None or len(oem_props) == 0:
-    device = GetBuildProp("ro.product.device", info_dict)
+    if OPTIONS.override_device == "auto":
+      if OPTIONS.override_prop:
+        device = GetBuildProp("ro.build.product", info_dict)
+      else:
+        device = GetBuildProp("ro.product.device", info_dict)
+    else:
+      device = OPTIONS.override_device
     script.AssertDevice(device)
   else:
     if oem_dict is None:
@@ -486,6 +507,8 @@ def GetOemProperty(name, oem_props, oem_dict, info_dict):
 
 
 def CalculateFingerprint(oem_props, oem_dict, info_dict):
+  if OPTIONS.override_prop:
+    return GetBuildProp("ro.build.date.utc", info_dict)
   if oem_props is None:
     return GetBuildProp("ro.build.fingerprint", info_dict)
   return "%s/%s/%s:%s" % (
@@ -535,6 +558,16 @@ def GetImage(which, tmpdir, info_dict):
   return sparse_img.SparseImage(path, mappath, clobbered_blocks)
 
 
+def CopyInstallTools(output_zip):
+  oldcwd = os.getcwd()
+  os.chdir(os.getenv('OUT'))
+  for root, subdirs, files in os.walk("install"):
+    for f in files:
+      p = os.path.join(root, f)
+      output_zip.write(p, p)
+  os.chdir(oldcwd)
+
+
 def WriteFullOTAPackage(input_zip, output_zip):
   # TODO: how to determine this?  We don't know what version it will
   # be installed on top of. For now, we expect the API just won't
@@ -553,13 +586,18 @@ def WriteFullOTAPackage(input_zip, output_zip):
     oem_dict = common.LoadDictionaryFromLines(
         open(OPTIONS.oem_source).readlines())
 
-  metadata = {
-      "post-build": CalculateFingerprint(oem_props, oem_dict,
-                                         OPTIONS.info_dict),
-      "pre-device": GetOemProperty("ro.product.device", oem_props, oem_dict,
-                                   OPTIONS.info_dict),
-      "post-timestamp": GetBuildProp("ro.build.date.utc", OPTIONS.info_dict),
-  }
+  if OPTIONS.override_prop:
+    metadata = {"post-timestamp": GetBuildProp("ro.build.date.utc",
+                                               OPTIONS.info_dict),
+                }
+  else:
+    metadata = {"post-build": GetBuildProp("ro.build.fingerprint",
+                                           OPTIONS.info_dict),
+                "pre-device": GetBuildProp("ro.product.device",
+                                           OPTIONS.info_dict),
+                "post-timestamp": GetBuildProp("ro.build.date.utc",
+                                               OPTIONS.info_dict),
+                }
 
   device_specific = common.DeviceSpecificParams(
       input_zip=input_zip,
@@ -627,7 +665,18 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
   script.Print("Target: %s" % CalculateFingerprint(
       oem_props, oem_dict, OPTIONS.info_dict))
 
+  script.AppendExtra("ifelse(is_mounted(\"/system\"), unmount(\"/system\"));")
   device_specific.FullOTA_InstallBegin()
+
+  CopyInstallTools(output_zip)
+  script.UnpackPackageDir("install", "/tmp/install")
+  script.SetPermissionsRecursive("/tmp/install", 0, 0, 0755, 0644, None, None)
+  script.SetPermissionsRecursive("/tmp/install/bin", 0, 0, 0755, 0755, None, None)
+
+  if OPTIONS.backuptool:
+    script.Mount("/system")
+    script.RunBackup("backup")
+    script.Unmount("/system")
 
   system_progress = 0.75
 
@@ -641,6 +690,27 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
   if "selinux_fc" in OPTIONS.info_dict:
     WritePolicyConfig(OPTIONS.info_dict["selinux_fc"], output_zip)
 
+  model = GetBuildProp("ro.product.model", OPTIONS.info_dict)
+  build = GetBuildProp("ro.build.date", OPTIONS.info_dict)
+  script.Print(" Compiled: %s "%(build));
+  script.Print(" For: %s   "%(model));
+  script.Print("                                        ");
+  script.Print("                                        ");
+  script.Print(" Compiled: %s "%(build));
+  script.Print(" For: %s   "%(model));
+  script.Print(" _______  _______  _______  _______     ");
+  script.Print("(  ___  )(  ___  )(  ____ \(  ____ )    ");
+  script.Print("| (   ) || (   ) || (    \/| (    )|    ");
+  script.Print("| (___) || |   | || (_____ | (____)|    ");
+  script.Print("|  ___  || |   | |(_____  )|  _____)    ");
+  script.Print("| (   ) || |   | |      ) || (          ");
+  script.Print("| )   ( || (___) |/\____) || )          ");
+  script.Print("|/     \|(_______)\_______)|/           ");
+  script.Print("                                        ");
+  script.Print("                                        ");
+  script.Print("----------------------------------------");
+  script.Print("            By Vasishath and Shahan_mik3 ");
+  
   recovery_mount_options = OPTIONS.info_dict.get("recovery_mount_options")
 
   system_items = ItemSet("system", "META/filesystem_config.txt")
@@ -702,8 +772,22 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
   common.CheckSize(boot_img.data, "boot.img", OPTIONS.info_dict)
   common.ZipWriteStr(output_zip, "boot.img", boot_img.data)
 
+  if OPTIONS.backuptool:
+    script.ShowProgress(0.02, 10)
+    if block_based:
+        script.Mount("/system")
+        script.RunBackup("restore")
+    if block_based:
+        script.Unmount("/system")
+
   script.ShowProgress(0.05, 5)
   script.WriteRawImage("/boot", "boot.img")
+
+  if block_based:
+    script.Print("Flashing SuperSU...")
+    common.ZipWriteStr(output_zip, "supersu/supersu.zip",
+                   ""+input_zip.read("SYSTEM/addon.d/UPDATE-SuperSU.zip"))
+    script.FlashSuperSU()
 
   script.ShowProgress(0.2, 10)
   device_specific.FullOTA_InstallEnd()
@@ -805,14 +889,17 @@ def WriteBlockIncrementalOTAPackage(target_zip, source_zip, output_zip):
     oem_dict = common.LoadDictionaryFromLines(
         open(OPTIONS.oem_source).readlines())
 
-  metadata = {
-      "pre-device": GetOemProperty("ro.product.device", oem_props, oem_dict,
-                                   OPTIONS.source_info_dict),
-      "ota-type": "BLOCK",
-  }
+  if OPTIONS.override_prop:
+    metadata = {"post-timestamp": GetBuildProp("ro.build.date.utc",
+                                               OPTIONS.target_info_dict),
+                }
+  else:
+    metadata = {"pre-device": GetBuildProp("ro.product.device",
+                                           OPTIONS.source_info_dict),
+                "post-timestamp": GetBuildProp("ro.build.date.utc",
+                                               OPTIONS.target_info_dict),
+                }
 
-  post_timestamp = GetBuildProp("ro.build.date.utc", OPTIONS.target_info_dict)
-  pre_timestamp = GetBuildProp("ro.build.date.utc", OPTIONS.source_info_dict)
   is_downgrade = long(post_timestamp) < long(pre_timestamp)
 
   if OPTIONS.downgrade:
@@ -842,16 +929,17 @@ def WriteBlockIncrementalOTAPackage(target_zip, source_zip, output_zip):
       metadata=metadata,
       info_dict=OPTIONS.source_info_dict)
 
-  source_fp = CalculateFingerprint(oem_props, oem_dict,
-                                   OPTIONS.source_info_dict)
-  target_fp = CalculateFingerprint(oem_props, oem_dict,
-                                   OPTIONS.target_info_dict)
-  metadata["pre-build"] = source_fp
-  metadata["post-build"] = target_fp
-  metadata["pre-build-incremental"] = GetBuildProp(
-      "ro.build.version.incremental", OPTIONS.source_info_dict)
-  metadata["post-build-incremental"] = GetBuildProp(
-      "ro.build.version.incremental", OPTIONS.target_info_dict)
+  # TODO: Currently this works differently from WriteIncrementalOTAPackage().
+  # This function doesn't consider thumbprints when writing
+  # metadata["pre/post-build"]. One possible reason is that the current
+  # devices with thumbprints are all using file-based OTAs. Long term we
+  # should factor out the common parts into a shared one to avoid further
+  # divergence.
+  if not OPTIONS.override_prop:
+    source_fp = GetBuildProp("ro.build.fingerprint", OPTIONS.source_info_dict)
+    target_fp = GetBuildProp("ro.build.fingerprint", OPTIONS.target_info_dict)
+    metadata["pre-build"] = source_fp
+    metadata["post-build"] = target_fp
 
   source_boot = common.GetBootableImage(
       "/tmp/boot.img", "boot.img", OPTIONS.source_tmp, "BOOT",
@@ -1935,6 +2023,12 @@ def main(argv):
       OPTIONS.updater_binary = a
     elif o in ("--no_fallback_to_full",):
       OPTIONS.fallback_to_full = False
+    elif o in ("--override_device"):
+      OPTIONS.override_device = a
+    elif o in ("--override_prop"):
+      OPTIONS.override_prop = bool(a.lower() == 'true')
+    elif o in ("--backup"):
+      OPTIONS.backuptool = bool(a.lower() == 'true')
     elif o == "--stash_threshold":
       try:
         OPTIONS.stash_threshold = float(a)
@@ -1949,6 +2043,10 @@ def main(argv):
       OPTIONS.payload_signer = a
     elif o == "--payload_signer_args":
       OPTIONS.payload_signer_args = shlex.split(a)
+    elif o in ("--backup"):
+      OPTIONS.backuptool = bool(a.lower() == 'true')
+    elif o in ("--override_device"):
+      OPTIONS.override_device = a
     else:
       return False
     return True
@@ -1980,6 +2078,9 @@ def main(argv):
                                  "log_diff=",
                                  "payload_signer=",
                                  "payload_signer_args=",
+                                 "backup=",
+                                 "override_device=",
+                                 "override_prop=",
                              ], extra_option_handler=option_handler)
 
   if len(args) != 2:
